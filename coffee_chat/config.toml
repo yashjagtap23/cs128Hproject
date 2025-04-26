@@ -1,0 +1,34 @@
+    # Example configuration for the Coffee Chat Helper
+    # Copy this to config.toml and customize
+
+    [smtp]
+    # SMTP server details
+    host = "smtp.gmail.com"
+    port = 587
+    user = "fyymichael@gmail.com"
+    from_email = "fyymichael@gmail.com" # Should match smtp_user for many providers
+
+    [sender]
+    # Information about the person sending the email
+    name = "Michael Feng"
+    # Path to the email template file relative to the project root
+    template_path = "email_template.txt"
+
+    # List of recipients to contact
+    [[recipients]]
+    name = "Yash Jagtap"
+    email = "yjagtap2@illinois.edu"
+    # Optional: Add specific schedule info per recipient later if needed
+    # schedule = "..."
+
+    [[recipients]]
+    name = "Blaire Jung"
+    email = "seoeunj2@illinois.edu"
+
+    # Add more [[recipients]] blocks as needed
+
+    # [schedule] # Optional section for global scheduling (e.g., cron string)
+    # enabled = false
+    # cron_expression = "0 0 9 * * Mon-Fri" # Example: 9 AM Mon-Fri
+    # timezone = "America/Chicago"
+    

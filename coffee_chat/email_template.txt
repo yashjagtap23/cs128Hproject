@@ -1,0 +1,16 @@
+Subject: Coffee Chat Invitation - {{ sender_name }}
+---
+Hi {{ recipient_name }},
+
+My name is {{ sender_name }}. I am a consultant at OTCR Consulting on the University of Illinois's campus. My team is currently working with a startup that is building GPU benchmarking capabilities. Considering your experience in the industry, I wanted to know if it would be possible for us to get some time for a short interview.
+
+These are the times that I am available:
+{% for time in availabilities %}
+- {{ time }}
+{% endfor %}
+
+Your insights would be really helpful for the project and we would really appreciate some time.
+Looking forward to chatting soon!
+
+Best,
+{{ sender_name }}

@@ -1,6 +1,19 @@
 [package]
-name = "coffee_chat"
+name = "coffee-chat" # Or your actual package name
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+lettre = { version = "0.11", features = ["smtp-transport", "tokio1-native-tls"] } # Or tokio1-rustls-tls
+tokio = { version = "1", features = ["full"] }
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+thiserror = "1.0"
+anyhow = "1.0"
+config = { version = "0.15.11", features = ["toml"] }
+secrecy = { version = "0.10", features = ["serde"] }
+tera = "1" # For templating
+dotenvy = "0.15" # Optional: To load .env files for local development convenience
+
+# Add other dependencies as needed (e.g., calendar API client)
+
