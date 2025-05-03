@@ -24,5 +24,12 @@ eframe = { version = "0.31.1", features = ["wayland"]}
 egui = "0.31.1"
 env_logger = "0.11"
 
-# Add other dependencies as needed (e.g., calendar API client)
-
+# Calendar dependencies
+google-calendar3 = "6.0"
+yup-oauth2       = { version = "11", features = ["hyper-rustls"] }
+hyper-rustls     = "0.27"
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+hyper-util       = { version = "0.1", features = ["client", "client-legacy", "http1"] }
+hyper = { version = "1", features = ["full"] }
+log = "0.4"
+http-body-util = "0.1"
