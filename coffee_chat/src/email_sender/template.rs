@@ -10,8 +10,8 @@ pub enum TemplateError {
         path: String,
         source: std::io::Error,
     },
-    #[error("Failed to parse template '{path}': {source}")]
-    ParseError { path: String, source: TeraError },
+    #[error("Failed to parse template '{name}': {source}")] // Changed path to name for clarity
+    ParseError { name: String, source: TeraError },
     #[error("Failed to render template: {0}")]
     RenderError(#[from] TeraError),
     #[error("Template format error: Missing 'Subject:' line or '---' separator")]
@@ -19,11 +19,14 @@ pub enum TemplateError {
 }
 
 /// Represents the parsed email template content.
+// Making fields pub(crate) allows access within the crate but not outside.
+// Alternatively, keep them private and use constructors/methods.
 pub struct EmailTemplate {
     pub subject_template: String,
     pub body_template: String,
-    tera: Tera,            // Keep Tera instance for rendering
-    template_name: String, // Name used within Tera
+    // Keep these private, managed by constructors
+    tera: Tera,
+    template_name: String,
 }
 
 impl EmailTemplate {
@@ -54,23 +57,34 @@ impl EmailTemplate {
             .to_string();
         let body_template = lines.collect::<Vec<&str>>().join("\n");
 
-        // Initialize Tera and add the templates
+        // Use the new constructor internally
+        Self::from_content(&subject_template, &body_template, "file_template")
+    }
+
+    /// --- NEW CONSTRUCTOR ---
+    /// Creates an EmailTemplate directly from subject and body strings.
+    /// Useful for creating templates from UI input.
+    pub fn from_content(subject: &str, body: &str, base_name: &str) -> Result<Self, TemplateError> {
         let mut tera = Tera::default();
-        let template_name = "email_content"; // Unique name for Tera
+        // Ensure unique names for Tera internal registry
+        let subject_template_name = format!("{}_subject", base_name);
+        let body_template_name = format!("{}_body", base_name);
+
         tera.add_raw_templates(vec![
-            (&(template_name.to_string() + "_subject"), &subject_template),
-            (&(template_name.to_string() + "_body"), &body_template),
+            (&subject_template_name, subject),
+            (&body_template_name, body),
         ])
         .map_err(|e| TemplateError::ParseError {
-            path: path_str,
+            name: base_name.to_string(), // Use base_name for error reporting
             source: e,
         })?;
 
         Ok(EmailTemplate {
-            subject_template, // Keep original for reference if needed
-            body_template,    // Keep original for reference if needed
+            subject_template: subject.to_string(),
+            body_template: body.to_string(),
             tera,
-            template_name: template_name.to_string(),
+            // Store the base name used for rendering lookups
+            template_name: base_name.to_string(),
         })
     }
 
@@ -86,12 +100,13 @@ impl EmailTemplate {
         context.insert("sender_name", sender_name);
         context.insert("availabilities", availabilities);
 
+        // Use the stored template_name base to construct the full names for rendering
         let subject = self
             .tera
-            .render(&(self.template_name.clone() + "_subject"), &context)?;
+            .render(&format!("{}_subject", self.template_name), &context)?;
         let body = self
             .tera
-            .render(&(self.template_name.clone() + "_body"), &context)?;
+            .render(&format!("{}_body", self.template_name), &context)?;
 
         Ok((subject, body))
     }
