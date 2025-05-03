@@ -27,6 +27,8 @@ env_logger = "0.11"
 # Calendar dependencies
 google-calendar3 = "6.0"
 yup-oauth2       = { version = "11", features = ["hyper-rustls"] }
+open = "5"
+webbrowser = "1.0.4"
 hyper-rustls     = "0.27"
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 hyper-util       = { version = "0.1", features = ["client", "client-legacy", "http1"] }

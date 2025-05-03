@@ -102,9 +102,9 @@ pub fn summarize_slots(slots: &[(DateTime<Utc>, DateTime<Utc>)], min_len: Durati
             // Simplified time formatting function
             fn fmt_time(dt: DateTime<Local>) -> String {
                 if dt.minute() == 0 {
-                    dt.format("%-I%P").to_string().replace("m", "") // remove 'm' from am/pm
+                    dt.format("%-I%P").to_string()
                 } else {
-                    dt.format("%-I:%M%P").to_string().replace("m", "")
+                    dt.format("%-I:%M%P").to_string()
                 }
             }
 

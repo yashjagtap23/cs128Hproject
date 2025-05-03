@@ -26,6 +26,51 @@ use std::thread;
 use tokio::runtime::Runtime;
 use yup_oauth2::{read_application_secret, InstalledFlowAuthenticator, InstalledFlowReturnMethod};
 
+use std::future::Future;
+use std::pin::Pin;
+use std::process::Command;
+use yup_oauth2::authenticator_delegate::InstalledFlowDelegate;
+
+struct BrowserFlowDelegate;
+
+impl InstalledFlowDelegate for BrowserFlowDelegate {
+    fn present_user_url<'a>(
+        &'a self,
+        url: &'a str,
+        _need_code: bool,
+    ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>> {
+        Box::pin(async move {
+            info!("Opening OAuth URL in browser: {}", url);
+
+            // Try to open browser - first attempt with xdg-open (Linux/WSL)
+            if let Err(e) = Command::new("xdg-open").arg(url).spawn() {
+                warn!("Failed to open browser with xdg-open: {}", e);
+
+                // Fallback to "open" for macOS
+                if let Err(e) = Command::new("open").arg(url).spawn() {
+                    warn!("Failed to open browser with open: {}", e);
+
+                    // Fallback to "cmd.exe /c start" for Windows
+                    if let Err(e) = Command::new("cmd.exe")
+                        .args(&["/c", "start", "", url])
+                        .spawn()
+                    {
+                        warn!("Failed to open browser with cmd.exe: {}", e);
+
+                        // Last resort: Print URL and instruct user
+                        println!("Please open this URL in your browser:");
+                        println!("{}", url);
+                    }
+                }
+            }
+
+            // Return empty string because we're using HTTPRedirect flow
+            // which doesn't need a manual code entry
+            Ok(String::new())
+        })
+    }
+}
+
 // --- Define types based on yup-oauth2 feature ---
 
 // Common connector type used by hyper-rustls
@@ -414,7 +459,7 @@ impl MyApp {
         ui.add_space(10.0);
         ui.horizontal(|ui| {
             let connect_button_text = if self.calendar_hub.is_some() {
-                "✓ Calendar Connected"
+                "✅ Calendar Connected"
             } else {
                 "📅 Connect Google Calendar"
             };
@@ -540,14 +585,18 @@ impl MyApp {
         let secret = read_application_secret(PathBuf::from(creds_path)).await?;
 
         info!("Building authenticator (token cache: {})...", token_cache);
+
+        // Create a custom auth flow that opens the browser automatically
         let auth =
             InstalledFlowAuthenticator::builder(secret, InstalledFlowReturnMethod::HTTPRedirect)
                 .persist_tokens_to_disk(PathBuf::from(token_cache))
+                .flow_delegate(Box::new(BrowserFlowDelegate {})) // Add custom flow delegate
                 .build()
                 .await?;
+
         info!("Authenticator built.");
 
-        // --- Build compatible hyper client using yup-oauth2 helper ---
+        // Build compatible hyper client using yup-oauth2 helper
         let https = HttpsConnectorBuilder::new()
             .with_native_roots()?
             .https_only()
@@ -557,8 +606,8 @@ impl MyApp {
         // wrap in hyper-util client
         let client = Client::builder(hyper_util::rt::TokioExecutor::new()).build(https);
 
-        // instantiate the Calendar API hub
-        let hub = CalendarHub::new(client, auth);
+        // Use explicit typing to help with trait resolution
+        let hub: CalendarHub<_> = CalendarHub::new(client, auth);
 
         Ok(hub)
     }
