@@ -45,11 +45,12 @@ pub async fn find_available_slots(
     info!("Found {} busy periods.", busy.len());
 
     info!("Calculating free windows...");
-    let raw_free = free_busy::find_free_windows(&busy, time_min, time_max);
-    info!("Found {} raw free windows.", raw_free.len());
+    let buffer = Duration::minutes(15);
+    let raw    = free_busy::find_free_windows(&busy, time_min, time_max, buffer);
+    info!("Found {} raw free windows.", raw.len());
 
     info!("Splitting windows at midnight...");
-    let free_split = free_busy::split_at_midnight(&raw_free);
+    let free_split = free_busy::split_at_midnight(&raw);
     info!("Found {} free windows after splitting.", free_split.len());
 
     Ok(free_split)
