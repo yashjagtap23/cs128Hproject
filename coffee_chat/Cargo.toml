@@ -23,6 +23,7 @@ dotenvy = "0.15" # Optional: To load .env files for local development convenienc
 eframe = { version = "0.31.1", features = ["wayland"]}
 egui = "0.31.1"
 env_logger = "0.11"
+egui_double_slider = "0.7.0"
 
 # Calendar dependencies
 google-calendar3 = "6.0"

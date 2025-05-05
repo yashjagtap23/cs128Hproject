@@ -6,6 +6,7 @@ use chrono::Duration;
 use eframe::egui;
 // Import necessary egui types for styling
 use egui::{Color32, Margin, Stroke, Vec2, Visuals}; // Use CornerRadius, remove Rounding
+use egui_double_slider::DoubleSlider;
 use google_calendar3::CalendarHub;
 use hyper_rustls::HttpsConnector;
 // Use the yup_oauth2 hyper client if feature enabled, otherwise stick to manual build
@@ -136,6 +137,9 @@ pub struct MyApp {
     is_fetching_slots: bool,
     credentials_path: String,
     token_cache_path: String,
+    calendar_buffer_minutes: u32, // New: Buffer in minutes
+    day_start_hour: u32,          // New: Start hour (0-23)
+    day_end_hour: u32,            // New: End hour (0-23)
 
     // Application Status
     status_message: String,
@@ -216,6 +220,9 @@ impl Default for MyApp {
             is_fetching_slots: false,
             credentials_path: "credentials.json".to_string(),
             token_cache_path: "tokencache.json".to_string(),
+            calendar_buffer_minutes: 15, // Initialize buffer
+            day_start_hour: 9,           // Initialize start hour (9 AM)
+            day_end_hour: 21,            // Initialize end hour (9 PM)
             status_message: "Loading configuration...".to_string(),
             is_sending_email: false,
             config_loaded: false,
@@ -443,6 +450,8 @@ impl MyApp {
     fn ui_email_message(&mut self, ui: &mut egui::Ui) {
         ui.heading("Email Message & Calendar");
         ui.add_space(5.0);
+
+        // --- Email Subject ---
         ui.horizontal(|ui| {
             ui.label("Subject:");
             ui.add(
@@ -450,13 +459,27 @@ impl MyApp {
             );
         });
         ui.add_space(8.0);
+
+        // --- Email Body ---
         ui.label("Body:");
-        egui::ScrollArea::vertical().id_salt("email_body_scroll").max_height(200.0).auto_shrink([false, false]).show(ui, |ui| { // Use id_salt if id_source deprecated
-            ui.add(egui::TextEdit::multiline(&mut self.email_body).desired_width(f32::INFINITY).desired_rows(8).hint_text("Enter email body here. Use {{recipient_name}}, {{sender_name}}, and {{availabilities}} as placeholders.").frame(true));
+        egui::ScrollArea::vertical()
+        .id_salt("email_body_scroll")
+        .max_height(200.0)
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.add(
+                egui::TextEdit::multiline(&mut self.email_body)
+                    .desired_width(f32::INFINITY)
+                    .desired_rows(8)
+                    .hint_text("Enter email body here. Use {{recipient_name}}, {{sender_name}}, and {{availabilities}} as placeholders.")
+                    .frame(true),
+            );
         });
         ui.add_space(8.0);
         ui.separator();
         ui.add_space(10.0);
+
+        // --- Calendar Connection ---
         ui.horizontal(|ui| {
             let connect_button_text = if self.calendar_hub.is_some() {
                 "✅ Calendar Connected"
@@ -485,23 +508,95 @@ impl MyApp {
             } else {
                 ui.label(&self.calendar_status);
             }
-            ui.add_space(10.0);
+        });
+        ui.add_space(10.0);
+
+        // --- Calendar Settings (Collapsible Section) ---
+        ui.collapsing("Calendar Settings", |ui| {
+            egui::Grid::new("calendar_settings_grid")
+                .num_columns(3)
+                .spacing([10.0, 8.0])
+                .show(ui, |ui| {
+                    // --- Buffer Setting ---
+                    ui.label("Buffer Time:"); // Label
+                    ui.add(
+                        // Standard Slider
+                        egui::Slider::new(&mut self.calendar_buffer_minutes, 0..=120) // Range 0-120 mins
+                            .show_value(false), // Don't show value on slider itself
+                    );
+                    ui.add(
+                        // Text input (DragValue) for precise control
+                        egui::DragValue::new(&mut self.calendar_buffer_minutes)
+                            .speed(1.0)
+                            .range(0..=120) // Use .range (corrected)
+                            .suffix(" min"), // Add units
+                    );
+                    ui.end_row();
+
+                    // --- Day Start/End Time Setting ---
+                    ui.label("Daily Availability:");
+
+                    // Combine Slider and Text Edits horizontally
+                    ui.horizontal(|ui| {
+                        // Use DoubleSlider
+                        ui.add(DoubleSlider::new(
+                            // Takes two mutable references and the full range
+                            &mut self.day_start_hour,
+                            &mut self.day_end_hour,
+                            0..=23, // The total possible range
+                        ));
+
+                        // Add some spacing
+                        ui.add_space(10.0);
+
+                        // Text boxes (DragValue) for precise start/end hour input
+                        ui.label("From:");
+                        let start_resp = ui.add(
+                            egui::DragValue::new(&mut self.day_start_hour)
+                                .speed(1.0)
+                                .range(0..=22)
+                                .suffix(":00"),
+                        );
+                        ui.label(" To:");
+                        let end_resp = ui.add(
+                            egui::DragValue::new(&mut self.day_end_hour)
+                                .speed(1.0)
+                                .range(1..=23)
+                                .suffix(":00"),
+                        );
+
+                        // Re-validate if text boxes or slider changed, ensuring start < end
+                        if start_resp.changed() || end_resp.changed() {
+                            if self.day_start_hour >= self.day_end_hour {
+                                self.day_end_hour = (self.day_start_hour + 1).min(23);
+                            }
+                        }
+                    });
+                    ui.end_row();
+                });
+        });
+        ui.add_space(10.0);
+
+        // --- Fetch Slots Button ---
+        ui.horizontal(|ui| {
             let fetch_button = egui::Button::new("🔄 Fetch Slots");
             if ui
                 .add_enabled(
                     self.calendar_hub.is_some() && !self.is_fetching_slots,
                     fetch_button,
                 )
-                .on_hover_text("Fetch available time slots from the connected calendar")
+                .on_hover_text("Fetch available time slots using current settings")
                 .clicked()
             {
-                self.handle_fetch_slots();
+                self.handle_fetch_slots(); // Ensure only one definition of this exists
             }
             if self.is_fetching_slots {
                 ui.add(egui::Spinner::new().size(16.0));
                 ui.label("Fetching...");
             }
         });
+
+        // --- Available Slots Display ---
         ui.add_space(10.0);
         ui.label("Available Slots:");
         egui::Frame::group(ui.style()).show(ui, |ui| {
@@ -510,7 +605,6 @@ impl MyApp {
                 .max_height(120.0)
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    // Use id_salt if id_source deprecated
                     if !self.available_slots.is_empty() {
                         for slot in &self.available_slots {
                             ui.label(slot);
@@ -521,12 +615,12 @@ impl MyApp {
                     {
                         ui.colored_label(
                             ui.style().visuals.widgets.inactive.fg_stroke.color,
-                            "(No slots fetched or none available in the next 14 days)",
+                            "(No slots fetched or none available with current filters)",
                         );
                     } else if self.calendar_hub.is_none() {
                         ui.colored_label(
                             ui.style().visuals.widgets.inactive.fg_stroke.color,
-                            "(Connect to calendar first)",
+                            "(Connect calendar and fetch slots)",
                         );
                     } else if self.is_fetching_slots {
                         ui.colored_label(
@@ -539,7 +633,6 @@ impl MyApp {
         ui.add_space(10.0);
         ui.separator();
     }
-
     // --- Async Handlers ---
 
     // (handle_connect_calendar remains the same)
@@ -610,47 +703,6 @@ impl MyApp {
         let hub: CalendarHub<_> = CalendarHub::new(client, auth);
 
         Ok(hub)
-    }
-
-    // (handle_fetch_slots remains the same - uses if let)
-    fn handle_fetch_slots(&mut self) {
-        if self.is_fetching_slots {
-            return;
-        }
-        if let Some(hub) = self.calendar_hub.clone() {
-            self.is_fetching_slots = true;
-            self.status_message = "Fetching available slots...".to_string();
-            self.available_slots.clear();
-            let sender = self.sender.clone();
-            let rt_handle = self.ensure_runtime().handle().clone();
-            let hub_clone = hub;
-            rt_handle.spawn(async move {
-                info!("Starting slot fetching task.");
-                match calendar::find_available_slots(&hub_clone).await {
-                    Ok(free_slots) => {
-                        info!("Successfully found {} raw free slots.", free_slots.len());
-                        let summarized = calendar::free_busy::summarize_slots(
-                            &free_slots,
-                            Duration::minutes(30),
-                        );
-                        info!("Summarized to {} displayable slots.", summarized.len());
-                        sender.send(Message::SlotsFetched(summarized)).ok();
-                    }
-                    Err(e) => {
-                        error!("Failed to find available slots: {}", e);
-                        sender
-                            .send(Message::SlotsFetchFailed(format!(
-                                "Failed to fetch slots: {}",
-                                e
-                            )))
-                            .ok();
-                    }
-                }
-            });
-        } else {
-            self.status_message = "Cannot fetch slots: Calendar not connected.".to_string();
-            warn!("Attempted to fetch slots without calendar connection.");
-        }
     }
 
     // (handle_send_invitations remains the same)
@@ -772,6 +824,67 @@ impl MyApp {
                 .send(Message::FinishedSending(success_count, error_count))
                 .ok();
         });
+    }
+
+    fn handle_fetch_slots(&mut self) {
+        if self.is_fetching_slots {
+            return;
+        }
+        if let Some(hub) = self.calendar_hub.clone() {
+            self.is_fetching_slots = true;
+            self.status_message = "Fetching available slots...".to_string();
+            self.available_slots.clear();
+
+            let sender = self.sender.clone();
+            let rt_handle = self.ensure_runtime().handle().clone();
+            let hub_clone = hub;
+            // Clone the new settings
+            let buffer_minutes = self.calendar_buffer_minutes;
+            let start_hour = self.day_start_hour;
+            let end_hour = self.day_end_hour;
+
+            rt_handle.spawn(async move {
+                info!(
+                    "Starting slot fetching task with buffer={} min, hours={}-{}",
+                    buffer_minutes, start_hour, end_hour
+                );
+                // Pass the new settings to find_available_slots
+                match calendar::find_available_slots(
+                    &hub_clone,
+                    buffer_minutes,
+                    start_hour,
+                    end_hour,
+                )
+                .await
+                {
+                    Ok(free_slots) => {
+                        info!(
+                            "Successfully found {} raw free slots (pre-filtering).",
+                            free_slots.len()
+                        );
+                        // Note: Summarization now happens *after* filtering inside find_available_slots
+                        let summarized = calendar::free_busy::summarize_slots(
+                            &free_slots,
+                            Duration::minutes(30), // Keep min_len for summarization distinct
+                        );
+                        info!("Summarized to {} displayable slots.", summarized.len());
+                        sender.send(Message::SlotsFetched(summarized)).ok();
+                    }
+                    Err(e) => {
+                        error!("Failed to find available slots: {}", e);
+                        sender
+                            .send(Message::SlotsFetchFailed(format!(
+                                "Failed to fetch slots: {}",
+                                e
+                            )))
+                            .ok();
+                    }
+                }
+            });
+        } else {
+            self.status_message = "Cannot fetch slots: Calendar not connected.".to_string();
+            warn!("Attempted to fetch slots without calendar connection.");
+        }
     }
 }
 
