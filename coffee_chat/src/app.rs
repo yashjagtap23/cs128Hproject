@@ -521,7 +521,7 @@ impl MyApp {
                     ui.label("Buffer Time:"); // Label
                     ui.add(
                         // Standard Slider
-                        egui::Slider::new(&mut self.calendar_buffer_minutes, 0..=120) // Range 0-120 mins
+                        egui::Slider::new(&mut self.calendar_buffer_minutes, 0..=60) // Range 0-60 mins
                             .show_value(false), // Don't show value on slider itself
                     );
                     ui.add(
