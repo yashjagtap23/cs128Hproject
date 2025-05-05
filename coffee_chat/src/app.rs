@@ -405,6 +405,7 @@ pub struct MyApp {
     is_sending_email: bool,
     config_loaded: bool,
     template_loaded: bool,
+    state_loaded_from_file: bool,
 
     // Background Communication
     tokio_rt: Option<Runtime>,
@@ -418,57 +419,63 @@ impl Default for MyApp {
         let (sender, receiver) = mpsc::channel();
 
         // --- Initial config/template loading task ---
+        // This still runs in the background after app starts
         let initial_sender = sender.clone();
-        thread::spawn(move || match AppConfig::load() {
-            Ok(config) => {
-                let config_clone = config.clone();
-                initial_sender.send(Message::ConfigLoaded(Ok(config))).ok();
-                match EmailTemplate::load(&config_clone.sender.template_path) {
-                    Ok(template) => {
-                        initial_sender
-                            .send(Message::TemplateLoaded(Ok((
-                                template.subject_template,
-                                template.body_template,
-                            ))))
-                            .ok();
-                    }
-                    Err(e) => {
-                        initial_sender
-                            .send(Message::TemplateLoaded(Err(format!(
-                                "Failed to load template: {}",
-                                e
-                            ))))
-                            .ok();
+        thread::spawn(move || {
+            match AppConfig::load() {
+                // Tries to load config.toml
+                Ok(config) => {
+                    let config_clone = config.clone();
+                    // Send message even if state loaded later, App::update decides how to use it
+                    initial_sender.send(Message::ConfigLoaded(Ok(config))).ok();
+                    match EmailTemplate::load(&config_clone.sender.template_path) {
+                        // Tries to load template
+                        Ok(template) => {
+                            initial_sender
+                                .send(Message::TemplateLoaded(Ok((
+                                    template.subject_template,
+                                    template.body_template,
+                                ))))
+                                .ok();
+                        }
+                        Err(e) => {
+                            initial_sender
+                                .send(Message::TemplateLoaded(Err(format!(
+                                    "Failed to load template initially: {}",
+                                    e
+                                ))))
+                                .ok();
+                        }
                     }
                 }
-            }
-            Err(e) => {
-                initial_sender
-                    .send(Message::ConfigLoaded(Err(format!(
-                        "Failed to load config: {}",
-                        e
-                    ))))
-                    .ok();
-                initial_sender
-                    .send(Message::TemplateLoaded(Err(
-                        "Template not loaded due to config error".to_string(),
-                    )))
-                    .ok();
+                Err(e) => {
+                    initial_sender
+                        .send(Message::ConfigLoaded(Err(format!(
+                            "Failed to load config initially: {}",
+                            e
+                        ))))
+                        .ok();
+                    initial_sender
+                        .send(Message::TemplateLoaded(Err(
+                            "Template not loaded (initial config error)".to_string(),
+                        )))
+                        .ok();
+                }
             }
         });
         // --- End initial loading task ---
 
+        // Set initial default values for the struct fields
         Self {
             smtp_host: String::new(),
-            smtp_port_str: String::new(),
+            smtp_port_str: "587".to_string(),
             smtp_user: String::new(),
-            // FIX: Use .into() for SecretString::new
             smtp_password: SecretString::new("".to_string().into()),
             from_email: String::new(),
             sender_name: String::new(),
-            template_path: PathBuf::from("email_template.txt"),
-            email_subject: String::new(),
-            email_body: String::new(),
+            template_path: PathBuf::from("email_template.txt"), // Default path
+            email_subject: "Coffee Chat Invitation".to_string(), // Default subject
+            email_body: "Hi {{recipient_name}},\n\nWould you be available for a brief coffee chat sometime soon?\n\nMy availability:\n{{availabilities}}\n\nBest,\n{{sender_name}}".to_string(), // Default body
             recipients: Vec::new(),
             new_recipient_name: String::new(),
             new_recipient_email: String::new(),
@@ -479,13 +486,14 @@ impl Default for MyApp {
             is_fetching_slots: false,
             credentials_path: "credentials.json".to_string(),
             token_cache_path: "tokencache.json".to_string(),
-            calendar_buffer_minutes: 15, // Initialize buffer
-            day_start_hour: 9,           // Initialize start hour (9 AM)
-            day_end_hour: 21,            // Initialize end hour (9 PM)
-            status_message: "Loading configuration...".to_string(),
+            calendar_buffer_minutes: 15,
+            day_start_hour: 9,
+            day_end_hour: 17,
+            status_message: "Initializing...".to_string(), // Changed initial message
             is_sending_email: false,
-            config_loaded: false,
-            template_loaded: false,
+            config_loaded: false, // Not processed yet
+            template_loaded: false, // Not processed yet
+            state_loaded_from_file: false, // Initialize flag to false
             tokio_rt: None,
             receiver,
             sender,
@@ -531,6 +539,7 @@ impl MyApp {
                                 // app.credentials_path = loaded_state.credentials_path;
                                 // app.token_cache_path = loaded_state.token_cache_path;
                                 app.status_message = "Loaded previous session state.".to_string();
+                                app.state_loaded_from_file = true;
                             }
                             Err(e) => {
                                 warn!(
@@ -1271,55 +1280,92 @@ impl eframe::App for MyApp {
     // FIX: Update margin calls
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // --- Process Background Messages ---
-        // (Message handling logic remains the same)
         while let Ok(message) = self.receiver.try_recv() {
             match message {
                 Message::ConfigLoaded(Ok(config)) => {
-                    info!("Processing loaded config.");
-                    self.smtp_host = config.smtp.host;
-                    self.smtp_port_str = config.smtp.port.to_string();
-                    self.smtp_user = config.smtp.user;
-                    self.smtp_password = config.smtp.password;
-                    self.from_email = config.smtp.from_email;
-                    self.sender_name = config.sender.name;
-                    self.template_path = config.sender.template_path;
-                    self.recipients = config
-                        .recipients
-                        .into_iter()
-                        .map(|r| UIRecipient {
-                            name: r.name,
-                            email: r.email,
-                        })
-                        .collect();
-                    self.config_loaded = true;
-                    self.status_message = if self.template_loaded {
-                        "Config and template loaded.".to_string()
+                    info!("Processing initial config load message.");
+                    // --- Apply config ONLY if state wasn't loaded ---
+                    if !self.state_loaded_from_file {
+                        info!("Applying config.toml values as no saved state was loaded.");
+                        self.smtp_host = config.smtp.host;
+                        self.smtp_port_str = config.smtp.port.to_string();
+                        self.smtp_user = config.smtp.user;
+                        self.smtp_password = config.smtp.password; // This might overwrite user input if they change password before config loads? Consider carefully.
+                        self.from_email = config.smtp.from_email;
+                        self.sender_name = config.sender.name;
+                        self.recipients = config
+                            .recipients
+                            .into_iter()
+                            .map(|r| UIRecipient {
+                                name: r.name,
+                                email: r.email,
+                            })
+                            .collect();
+                        // NOTE: We are NOT applying calendar settings from config, letting saved state rule.
+                        if self.status_message.contains("Using defaults") {
+                            self.status_message = "Applied defaults from config.toml.".to_string();
+                        }
                     } else {
-                        "Config loaded. Waiting for template...".to_string()
-                    };
-                    debug!("Config applied to state.");
+                        info!("Saved state already loaded, ignoring most values from config.toml.");
+                        if self
+                            .status_message
+                            .contains("Loaded previous session state.")
+                        {
+                            self.status_message =
+                                "Loaded previous session. Initial config processed.".to_string();
+                        }
+                    }
+                    // Always update template path from config, as it's not saved in app_state.json
+                    self.template_path = config.sender.template_path;
+                    self.config_loaded = true; // Mark config loading sequence step as done
+                    debug!("Config message processed.");
                 }
                 Message::ConfigLoaded(Err(e)) => {
-                    error!("Config loading error: {}", e);
-                    self.status_message = format!("ERROR loading config: {}", e);
-                    self.config_loaded = true;
+                    error!("Initial Config loading error message received: {}", e);
+                    if !self.state_loaded_from_file
+                        && self.status_message.contains("Using defaults")
+                    {
+                        self.status_message = format!("ERROR loading initial config: {}", e);
+                    }
+                    self.config_loaded = true; // Mark sequence step as done
                 }
                 Message::TemplateLoaded(Ok((subject, body))) => {
-                    info!("Processing loaded template.");
-                    self.email_subject = subject;
-                    self.email_body = body;
-                    self.template_loaded = true;
-                    self.status_message = if self.config_loaded {
-                        "Config and template loaded.".to_string()
+                    info!("Processing initial template load message.");
+                    // --- Apply template ONLY if state wasn't loaded ---
+                    if !self.state_loaded_from_file {
+                        info!("Applying template file content as no saved state was loaded.");
+                        self.email_subject = subject;
+                        self.email_body = body;
+                        if self
+                            .status_message
+                            .contains("Applied defaults from config.toml")
+                        {
+                            self.status_message =
+                                "Applied defaults from config and template.".to_string();
+                        } else if self.status_message.contains("Using defaults") {
+                            self.status_message = "Applied defaults from template.".to_string();
+                        }
                     } else {
-                        "Template loaded. Waiting for config...".to_string()
-                    };
-                    debug!("Template applied to state.");
+                        info!(
+                            "Saved state already loaded, ignoring content from email_template.txt."
+                        );
+                        if self.status_message.contains("Initial config processed") {
+                            self.status_message =
+                                "Loaded previous session. Initial config/template processed."
+                                    .to_string();
+                        }
+                    }
+                    self.template_loaded = true; // Mark sequence step as done
+                    debug!("Template message processed.");
                 }
                 Message::TemplateLoaded(Err(e)) => {
-                    error!("Template loading error: {}", e);
-                    self.status_message = format!("ERROR loading template: {}", e);
-                    self.template_loaded = true;
+                    error!("Initial Template loading error message received: {}", e);
+                    if !self.state_loaded_from_file
+                        && self.status_message.contains("Using defaults")
+                    {
+                        self.status_message = format!("ERROR loading initial template: {}", e);
+                    }
+                    self.template_loaded = true; // Mark sequence step as done
                 }
                 Message::EmailSent(email) => {
                     debug!("UI Update: Email sent to {}", email);
