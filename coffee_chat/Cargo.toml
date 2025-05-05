@@ -12,10 +12,12 @@ lettre = { version = "0.11", features = ["smtp-transport", "tokio1-native-tls"] 
 tokio = { version = "1", features = ["full"] }
 chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 thiserror = "1.0"
 anyhow = "1.0"
 config = { version = "0.15.11", features = ["toml"] }
 secrecy = { version = "0.10", features = ["serde"] }
+directories-next = "2.0.0"
 tera = "1" # For templating
 dotenvy = "0.15" # Optional: To load .env files for local development convenience
 

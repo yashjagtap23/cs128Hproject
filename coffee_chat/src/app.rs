@@ -32,6 +32,11 @@ use std::pin::Pin;
 use std::process::Command;
 use yup_oauth2::authenticator_delegate::InstalledFlowDelegate;
 
+use directories_next::ProjectDirs;
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::io::{BufReader, BufWriter}; // For efficient file reading/writing // For config directory
+
 struct BrowserFlowDelegate;
 
 impl InstalledFlowDelegate for BrowserFlowDelegate {
@@ -102,10 +107,264 @@ enum Message {
 
 // --- UIRecipient ---
 // (Struct remains the same)
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct UIRecipient {
     name: String,
     email: String,
+}
+
+struct SavedAppState {
+    smtp_host: String,
+    smtp_port_str: String,
+    smtp_user: String,
+    smtp_password: SecretString, // Requires 'serde' feature for secrecy crate
+    from_email: String,
+    sender_name: String,
+    email_subject: String,
+    email_body: String,
+    recipients: Vec<UIRecipient>,
+    calendar_buffer_minutes: u32,
+    day_start_hour: u32,
+    day_end_hour: u32,
+    // Optional: Persist these if they should be remembered across sessions
+    // credentials_path: String,
+    // token_cache_path: String,
+}
+
+// --- Manual Serialize Implementation ---
+impl Serialize for SavedAppState {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        // Define the number of fields
+        let mut state = serializer.serialize_struct("SavedAppState", 12)?; // Update count if fields change
+
+        state.serialize_field("smtp_host", &self.smtp_host)?;
+        state.serialize_field("smtp_port_str", &self.smtp_port_str)?;
+        state.serialize_field("smtp_user", &self.smtp_user)?;
+        // Expose the secret *before* serializing the inner String
+        state.serialize_field("smtp_password", self.smtp_password.expose_secret())?;
+        state.serialize_field("from_email", &self.from_email)?;
+        state.serialize_field("sender_name", &self.sender_name)?;
+        state.serialize_field("email_subject", &self.email_subject)?;
+        state.serialize_field("email_body", &self.email_body)?;
+        state.serialize_field("recipients", &self.recipients)?; // Vec<UIRecipient> needs UIRecipient to derive Serialize
+        state.serialize_field("calendar_buffer_minutes", &self.calendar_buffer_minutes)?;
+        state.serialize_field("day_start_hour", &self.day_start_hour)?;
+        state.serialize_field("day_end_hour", &self.day_end_hour)?;
+        // Add optional fields here if saving them:
+        // state.serialize_field("credentials_path", &self.credentials_path)?;
+        // state.serialize_field("token_cache_path", &self.token_cache_path)?;
+
+        state.end()
+    }
+}
+
+// --- Manual Deserialize Implementation ---
+impl<'de> Deserialize<'de> for SavedAppState {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // Define the fields we expect
+        #[derive(Deserialize)]
+        #[serde(field_identifier, rename_all = "snake_case")] // Match field names used in Serialize
+        enum Field {
+            SmtpHost,
+            SmtpPortStr,
+            SmtpUser,
+            SmtpPassword,
+            FromEmail,
+            SenderName,
+            EmailSubject,
+            EmailBody,
+            Recipients,
+            CalendarBufferMinutes,
+            DayStartHour,
+            DayEndHour, /* , CredentialsPath, TokenCachePath */
+        }
+
+        struct SavedAppStateVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for SavedAppStateVisitor {
+            type Value = SavedAppState;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("struct SavedAppState")
+            }
+
+            fn visit_map<V>(self, mut map: V) -> Result<SavedAppState, V::Error>
+            where
+                V: serde::de::MapAccess<'de>,
+            {
+                // Use Option for each field to track if it was seen
+                let mut smtp_host = None;
+                let mut smtp_port_str = None;
+                let mut smtp_user = None;
+                let mut smtp_password_str: Option<String> = None; // Deserialize password as String first
+                let mut from_email = None;
+                let mut sender_name = None;
+                let mut email_subject = None;
+                let mut email_body = None;
+                let mut recipients = None;
+                let mut calendar_buffer_minutes = None;
+                let mut day_start_hour = None;
+                let mut day_end_hour = None;
+                // let mut credentials_path = None;
+                // let mut token_cache_path = None;
+
+                // Loop through the map data provided by the deserializer
+                while let Some(key) = map.next_key()? {
+                    match key {
+                        Field::SmtpHost => {
+                            if smtp_host.is_some() {
+                                return Err(serde::de::Error::duplicate_field("smtp_host"));
+                            }
+                            smtp_host = Some(map.next_value()?);
+                        }
+                        Field::SmtpPortStr => {
+                            if smtp_port_str.is_some() {
+                                return Err(serde::de::Error::duplicate_field("smtp_port_str"));
+                            }
+                            smtp_port_str = Some(map.next_value()?);
+                        }
+                        Field::SmtpUser => {
+                            if smtp_user.is_some() {
+                                return Err(serde::de::Error::duplicate_field("smtp_user"));
+                            }
+                            smtp_user = Some(map.next_value()?);
+                        }
+                        // Deserialize password as a String
+                        Field::SmtpPassword => {
+                            if smtp_password_str.is_some() {
+                                return Err(serde::de::Error::duplicate_field("smtp_password"));
+                            }
+                            smtp_password_str = Some(map.next_value()?);
+                        }
+                        Field::FromEmail => {
+                            if from_email.is_some() {
+                                return Err(serde::de::Error::duplicate_field("from_email"));
+                            }
+                            from_email = Some(map.next_value()?);
+                        }
+                        Field::SenderName => {
+                            if sender_name.is_some() {
+                                return Err(serde::de::Error::duplicate_field("sender_name"));
+                            }
+                            sender_name = Some(map.next_value()?);
+                        }
+                        Field::EmailSubject => {
+                            if email_subject.is_some() {
+                                return Err(serde::de::Error::duplicate_field("email_subject"));
+                            }
+                            email_subject = Some(map.next_value()?);
+                        }
+                        Field::EmailBody => {
+                            if email_body.is_some() {
+                                return Err(serde::de::Error::duplicate_field("email_body"));
+                            }
+                            email_body = Some(map.next_value()?);
+                        }
+                        Field::Recipients => {
+                            if recipients.is_some() {
+                                return Err(serde::de::Error::duplicate_field("recipients"));
+                            }
+                            recipients = Some(map.next_value()?);
+                        } // UIRecipient needs derive Deserialize
+                        Field::CalendarBufferMinutes => {
+                            if calendar_buffer_minutes.is_some() {
+                                return Err(serde::de::Error::duplicate_field(
+                                    "calendar_buffer_minutes",
+                                ));
+                            }
+                            calendar_buffer_minutes = Some(map.next_value()?);
+                        }
+                        Field::DayStartHour => {
+                            if day_start_hour.is_some() {
+                                return Err(serde::de::Error::duplicate_field("day_start_hour"));
+                            }
+                            day_start_hour = Some(map.next_value()?);
+                        }
+                        Field::DayEndHour => {
+                            if day_end_hour.is_some() {
+                                return Err(serde::de::Error::duplicate_field("day_end_hour"));
+                            }
+                            day_end_hour = Some(map.next_value()?);
+                        } // Add optional fields here if saving them
+                          // Field::CredentialsPath => { if credentials_path.is_some() { return Err(serde::de::Error::duplicate_field("credentials_path")); } credentials_path = Some(map.next_value()?); }
+                          // Field::TokenCachePath => { if token_cache_path.is_some() { return Err(serde::de::Error::duplicate_field("token_cache_path")); } token_cache_path = Some(map.next_value()?); }
+                    }
+                }
+
+                // Check that all required fields were found and unwrap them
+                let smtp_host =
+                    smtp_host.ok_or_else(|| serde::de::Error::missing_field("smtp_host"))?;
+                let smtp_port_str = smtp_port_str
+                    .ok_or_else(|| serde::de::Error::missing_field("smtp_port_str"))?;
+                let smtp_user =
+                    smtp_user.ok_or_else(|| serde::de::Error::missing_field("smtp_user"))?;
+                let smtp_password_str = smtp_password_str
+                    .ok_or_else(|| serde::de::Error::missing_field("smtp_password"))?;
+                let from_email =
+                    from_email.ok_or_else(|| serde::de::Error::missing_field("from_email"))?;
+                let sender_name =
+                    sender_name.ok_or_else(|| serde::de::Error::missing_field("sender_name"))?;
+                let email_subject = email_subject
+                    .ok_or_else(|| serde::de::Error::missing_field("email_subject"))?;
+                let email_body =
+                    email_body.ok_or_else(|| serde::de::Error::missing_field("email_body"))?;
+                let recipients =
+                    recipients.ok_or_else(|| serde::de::Error::missing_field("recipients"))?;
+                let calendar_buffer_minutes = calendar_buffer_minutes
+                    .ok_or_else(|| serde::de::Error::missing_field("calendar_buffer_minutes"))?;
+                let day_start_hour = day_start_hour
+                    .ok_or_else(|| serde::de::Error::missing_field("day_start_hour"))?;
+                let day_end_hour =
+                    day_end_hour.ok_or_else(|| serde::de::Error::missing_field("day_end_hour"))?;
+                // Unwrap optional fields here if saving them
+                // let credentials_path = credentials_path.ok_or_else(|| serde::de::Error::missing_field("credentials_path"))?;
+                // let token_cache_path = token_cache_path.ok_or_else(|| serde::de::Error::missing_field("token_cache_path"))?;
+
+                // Construct the SavedAppState, wrapping the password String in SecretString
+                Ok(SavedAppState {
+                    smtp_host,
+                    smtp_port_str,
+                    smtp_user,
+                    smtp_password: SecretString::new(smtp_password_str.into()), // Wrap here
+                    from_email,
+                    sender_name,
+                    email_subject,
+                    email_body,
+                    recipients,
+                    calendar_buffer_minutes,
+                    day_start_hour,
+                    day_end_hour,
+                    // Add optional fields here if saving them
+                    // credentials_path,
+                    // token_cache_path,
+                })
+            }
+        }
+
+        // Define the field names for the deserializer
+        const FIELDS: &'static [&'static str] = &[
+            "smtp_host",
+            "smtp_port_str",
+            "smtp_user",
+            "smtp_password",
+            "from_email",
+            "sender_name",
+            "email_subject",
+            "email_body",
+            "recipients",
+            "calendar_buffer_minutes",
+            "day_start_hour",
+            "day_end_hour", /* "credentials_path", "token_cache_path" */
+        ];
+        deserializer.deserialize_struct("SavedAppState", FIELDS, SavedAppStateVisitor)
+    }
 }
 
 // --- MyApp Struct ---
@@ -238,6 +497,76 @@ impl Default for MyApp {
 impl MyApp {
     // --- Constructor `new` with Theme Fixes ---
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        Self::configure_visuals(cc);
+        let mut app = Self::default();
+
+        // --- Load State Manually from File ---
+        if let Some(proj_dirs) = ProjectDirs::from("com", "YourOrg", "CoffeeChatHelper") {
+            // Adjust qualifier/org/app names
+            let config_dir = proj_dirs.config_dir();
+            let state_path = config_dir.join("app_state.json");
+
+            if state_path.exists() {
+                info!("Attempting to load state from: {:?}", state_path);
+                match fs::File::open(&state_path) {
+                    Ok(file) => {
+                        let reader = BufReader::new(file);
+                        match serde_json::from_reader::<_, SavedAppState>(reader) {
+                            Ok(loaded_state) => {
+                                info!("Successfully loaded saved application state from file.");
+                                // Overwrite default fields with loaded state
+                                app.smtp_host = loaded_state.smtp_host;
+                                app.smtp_port_str = loaded_state.smtp_port_str;
+                                app.smtp_user = loaded_state.smtp_user;
+                                app.smtp_password = loaded_state.smtp_password;
+                                app.from_email = loaded_state.from_email;
+                                app.sender_name = loaded_state.sender_name;
+                                app.email_subject = loaded_state.email_subject;
+                                app.email_body = loaded_state.email_body;
+                                app.recipients = loaded_state.recipients;
+                                app.calendar_buffer_minutes = loaded_state.calendar_buffer_minutes;
+                                app.day_start_hour = loaded_state.day_start_hour;
+                                app.day_end_hour = loaded_state.day_end_hour;
+                                // Optional load paths
+                                // app.credentials_path = loaded_state.credentials_path;
+                                // app.token_cache_path = loaded_state.token_cache_path;
+                                app.status_message = "Loaded previous session state.".to_string();
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "Failed to deserialize state file {:?}: {}. Using defaults.",
+                                    state_path, e
+                                );
+                                app.status_message =
+                                    "Failed to load saved state. Using defaults.".to_string();
+                                // Optionally delete the corrupt file?
+                                // fs::remove_file(state_path).ok();
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to open state file {:?}: {}. Using defaults.",
+                            state_path, e
+                        );
+                        app.status_message =
+                            "Couldn't open state file. Using defaults.".to_string();
+                    }
+                }
+            } else {
+                info!("No state file found at {:?}. Using defaults.", state_path);
+                app.status_message = "No saved state found. Using defaults.".to_string();
+            }
+        } else {
+            warn!("Could not determine project directory for saving state. Using defaults.");
+            app.status_message = "State saving unavailable. Using defaults.".to_string();
+        }
+        app.ensure_runtime();
+        info!("Tokio runtime ensured.");
+        app
+    }
+
+    fn configure_visuals(cc: &eframe::CreationContext<'_>) {
         let mut style = (*cc.egui_ctx.style()).clone();
 
         // Define Ayu Light theme colors (same as before)
@@ -300,12 +629,7 @@ impl MyApp {
 
         // Apply the fully customized style to the context
         cc.egui_ctx.set_style(style);
-
-        // Create the default app instance AFTER setting the style
-        let mut app = Self::default();
-        app.ensure_runtime();
-        info!("Tokio runtime ensured.");
-        app
+        info!("Visuals configured.")
     }
 
     // (ensure_runtime remains the same)
@@ -316,6 +640,56 @@ impl MyApp {
         })
     }
 
+    // --- NEW: Method to save state manually ---
+    fn save_state(&self) {
+        info!("Attempting to save application state...");
+        if let Some(proj_dirs) = ProjectDirs::from("com", "YourOrg", "CoffeeChatHelper") {
+            // Use same identifiers as in new()
+            let config_dir = proj_dirs.config_dir();
+            // Ensure config directory exists
+            if let Err(e) = fs::create_dir_all(config_dir) {
+                error!("Failed to create config directory {:?}: {}", config_dir, e);
+                return;
+            }
+
+            let state_path = config_dir.join("app_state.json");
+
+            // Create the state object
+            let state_to_save = SavedAppState {
+                smtp_host: self.smtp_host.clone(),
+                smtp_port_str: self.smtp_port_str.clone(),
+                smtp_user: self.smtp_user.clone(),
+                smtp_password: self.smtp_password.clone(),
+                from_email: self.from_email.clone(),
+                sender_name: self.sender_name.clone(),
+                email_subject: self.email_subject.clone(),
+                email_body: self.email_body.clone(),
+                recipients: self.recipients.clone(),
+                calendar_buffer_minutes: self.calendar_buffer_minutes,
+                day_start_hour: self.day_start_hour,
+                day_end_hour: self.day_end_hour,
+                // Optional save paths
+                // credentials_path: self.credentials_path.clone(),
+                // token_cache_path: self.token_cache_path.clone(),
+            };
+
+            // Attempt to write the file
+            match fs::File::create(&state_path) {
+                Ok(file) => {
+                    let writer = BufWriter::new(file);
+                    match serde_json::to_writer_pretty(writer, &state_to_save) {
+                        Ok(_) => info!("Application state saved successfully to {:?}", state_path),
+                        Err(e) => {
+                            error!("Failed to serialize state to file {:?}: {}", state_path, e)
+                        }
+                    }
+                }
+                Err(e) => error!("Failed to create state file {:?}: {}", state_path, e),
+            }
+        } else {
+            error!("Could not determine project directory for saving state.");
+        }
+    }
     // --- UI Sections ---
 
     // (ui_recipient_list remains the same)
@@ -890,6 +1264,10 @@ impl MyApp {
 
 // --- App::update Implementation ---
 impl eframe::App for MyApp {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.save_state();
+    }
+
     // FIX: Update margin calls
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // --- Process Background Messages ---
