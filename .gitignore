@@ -1,5 +1,9 @@
 .env
 coffee_chat/target/
 coffee_chat/credentials.json
+<<<<<<< Updated upstream
 coffee_chat/tokencache.json
 coffee_chat/fonts/
+=======
+coffee_chat/tokencache.json
+>>>>>>> Stashed changes
