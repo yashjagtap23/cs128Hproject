@@ -876,6 +876,7 @@ dependencies = [
  "hyper",
  "hyper-rustls",
  "hyper-util",
+ "keyring",
  "lettre",
  "log",
  "open",
@@ -2541,6 +2542,15 @@ dependencies = [
  "pest",
  "pest_derive",
  "serde",
+]
+
+[[package]]
+name = "keyring"
+version = "3.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1961983669d57bdfe6c0f3ef8e4c229b5ef751afcc7d87e4271d2f71f6ccfa8b"
+dependencies = [
+ "log",
 ]
 
 [[package]]

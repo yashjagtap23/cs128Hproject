@@ -20,6 +20,7 @@ secrecy = { version = "0.10", features = ["serde"] }
 directories-next = "2.0.0"
 tera = "1" # For templating
 dotenvy = "0.15" # Optional: To load .env files for local development convenience
+keyring = "3.6.2"
 
 # Gui dependencies
 eframe = { version = "0.31.1", features = ["wayland"]}

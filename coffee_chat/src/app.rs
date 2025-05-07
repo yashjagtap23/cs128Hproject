@@ -27,15 +27,15 @@ use std::thread;
 use tokio::runtime::Runtime;
 use yup_oauth2::{read_application_secret, InstalledFlowAuthenticator, InstalledFlowReturnMethod};
 
-use std::future::Future;
-use std::pin::Pin;
-use std::process::Command;
-use yup_oauth2::authenticator_delegate::InstalledFlowDelegate;
-
 use directories_next::ProjectDirs;
+use keyring::Entry;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::io::{BufReader, BufWriter}; // For efficient file reading/writing // For config directory
+use std::future::Future;
+use std::io::{BufReader, BufWriter};
+use std::pin::Pin;
+use std::process::Command;
+use yup_oauth2::authenticator_delegate::InstalledFlowDelegate; // For efficient file reading/writing // For config directory
 
 struct BrowserFlowDelegate;
 
@@ -117,7 +117,7 @@ struct SavedAppState {
     smtp_host: String,
     smtp_port_str: String,
     smtp_user: String,
-    smtp_password: SecretString, // Requires 'serde' feature for secrecy crate
+    // smtp_password: SecretString, // Requires 'serde' feature for secrecy crate
     from_email: String,
     sender_name: String,
     email_subject: String,
@@ -145,7 +145,7 @@ impl Serialize for SavedAppState {
         state.serialize_field("smtp_port_str", &self.smtp_port_str)?;
         state.serialize_field("smtp_user", &self.smtp_user)?;
         // Expose the secret *before* serializing the inner String
-        state.serialize_field("smtp_password", self.smtp_password.expose_secret())?;
+        // state.serialize_field("smtp_password", self.smtp_password.expose_secret())?;
         state.serialize_field("from_email", &self.from_email)?;
         state.serialize_field("sender_name", &self.sender_name)?;
         state.serialize_field("email_subject", &self.email_subject)?;
@@ -175,7 +175,7 @@ impl<'de> Deserialize<'de> for SavedAppState {
             SmtpHost,
             SmtpPortStr,
             SmtpUser,
-            SmtpPassword,
+            // SmtpPassword,
             FromEmail,
             SenderName,
             EmailSubject,
@@ -203,7 +203,7 @@ impl<'de> Deserialize<'de> for SavedAppState {
                 let mut smtp_host = None;
                 let mut smtp_port_str = None;
                 let mut smtp_user = None;
-                let mut smtp_password_str: Option<String> = None; // Deserialize password as String first
+                // let mut smtp_password_str: Option<String> = None; // Deserialize password as String first
                 let mut from_email = None;
                 let mut sender_name = None;
                 let mut email_subject = None;
@@ -237,12 +237,12 @@ impl<'de> Deserialize<'de> for SavedAppState {
                             smtp_user = Some(map.next_value()?);
                         }
                         // Deserialize password as a String
-                        Field::SmtpPassword => {
-                            if smtp_password_str.is_some() {
-                                return Err(serde::de::Error::duplicate_field("smtp_password"));
-                            }
-                            smtp_password_str = Some(map.next_value()?);
-                        }
+                        // Field::SmtpPassword => {
+                        //     if smtp_password_str.is_some() {
+                        //         return Err(serde::de::Error::duplicate_field("smtp_password"));
+                        //     }
+                        //     smtp_password_str = Some(map.next_value()?);
+                        // }
                         Field::FromEmail => {
                             if from_email.is_some() {
                                 return Err(serde::de::Error::duplicate_field("from_email"));
@@ -305,8 +305,8 @@ impl<'de> Deserialize<'de> for SavedAppState {
                     .ok_or_else(|| serde::de::Error::missing_field("smtp_port_str"))?;
                 let smtp_user =
                     smtp_user.ok_or_else(|| serde::de::Error::missing_field("smtp_user"))?;
-                let smtp_password_str = smtp_password_str
-                    .ok_or_else(|| serde::de::Error::missing_field("smtp_password"))?;
+                // let smtp_password_str = smtp_password_str
+                //     .ok_or_else(|| serde::de::Error::missing_field("smtp_password"))?;
                 let from_email =
                     from_email.ok_or_else(|| serde::de::Error::missing_field("from_email"))?;
                 let sender_name =
@@ -332,7 +332,7 @@ impl<'de> Deserialize<'de> for SavedAppState {
                     smtp_host,
                     smtp_port_str,
                     smtp_user,
-                    smtp_password: SecretString::new(smtp_password_str.into()), // Wrap here
+                    // smtp_password: SecretString::new(smtp_password_str.into()), // Wrap here
                     from_email,
                     sender_name,
                     email_subject,
@@ -374,7 +374,8 @@ pub struct MyApp {
     smtp_host: String,
     smtp_port_str: String,
     smtp_user: String,
-    smtp_password: SecretString,
+    smtp_password: SecretString, // Runtime password, loaded from keychain
+    ui_smtp_password_input: String, // UI buffer for password input
     from_email: String,
     sender_name: String,
     template_path: PathBuf,
@@ -471,6 +472,7 @@ impl Default for MyApp {
             smtp_port_str: "587".to_string(),
             smtp_user: String::new(),
             smtp_password: SecretString::new("".to_string().into()),
+            ui_smtp_password_input: String::new(),
             from_email: String::new(),
             sender_name: String::new(),
             template_path: PathBuf::from("email_template.txt"), // Default path
@@ -503,6 +505,7 @@ impl Default for MyApp {
 
 // --- MyApp Implementation ---
 impl MyApp {
+    const KEYRING_SERVICE_NAME: &'static str = "coffeecatchathelper.smtp";
     // --- Constructor `new` with Theme Fixes ---
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         Self::configure_visuals(cc);
@@ -526,7 +529,7 @@ impl MyApp {
                                 app.smtp_host = loaded_state.smtp_host;
                                 app.smtp_port_str = loaded_state.smtp_port_str;
                                 app.smtp_user = loaded_state.smtp_user;
-                                app.smtp_password = loaded_state.smtp_password;
+                                // app.smtp_password = loaded_state.smtp_password;
                                 app.from_email = loaded_state.from_email;
                                 app.sender_name = loaded_state.sender_name;
                                 app.email_subject = loaded_state.email_subject;
@@ -540,6 +543,36 @@ impl MyApp {
                                 // app.token_cache_path = loaded_state.token_cache_path;
                                 app.status_message = "Loaded previous session state.".to_string();
                                 app.state_loaded_from_file = true;
+
+                                // --- Load Password from Keychain AFTER loading smtp_user ---
+                                if !app.smtp_user.is_empty() {
+                                    match Self::load_password_from_keychain(&app.smtp_user) {
+                                        Ok(password_secret) => {
+                                            app.smtp_password = password_secret;
+                                            // Don't populate ui_smtp_password_input here; let user type if they want to change.
+                                            // Or show "********" as a placeholder if desired.
+                                            // app.ui_smtp_password_input = "********".to_string(); // Example placeholder
+                                            info!(
+                                                "Loaded SMTP password from keychain for user '{}'.",
+                                                app.smtp_user
+                                            );
+                                            app.status_message =
+                                                "Loaded session and keychain password.".to_string();
+                                        }
+                                        Err(keyring::Error::NoEntry) => {
+                                            info!(
+                                                "No SMTP password in keychain for user '{}'.",
+                                                app.smtp_user
+                                            );
+                                            // status_message remains "Loaded previous session settings."
+                                        }
+                                        Err(e) => {
+                                            warn!("Error loading SMTP password from keychain for user '{}': {:?}. ", app.smtp_user, e);
+                                            app.status_message =
+                                                "Error loading password from keychain.".to_string();
+                                        }
+                                    }
+                                }
                             }
                             Err(e) => {
                                 warn!(
@@ -573,6 +606,39 @@ impl MyApp {
         app.ensure_runtime();
         info!("Tokio runtime ensured.");
         app
+    }
+
+    fn load_password_from_keychain(smtp_user: &str) -> Result<SecretString, keyring::Error> {
+        if smtp_user.is_empty() {
+            // Cannot retrieve password without a username to identify the entry
+            return Err(keyring::Error::NoEntry);
+        }
+        let entry = Entry::new(Self::KEYRING_SERVICE_NAME, smtp_user)?;
+        match entry.get_password() {
+            Ok(password_str) => Ok(SecretString::new(password_str.into())),
+            Err(e) => Err(e),
+        }
+    }
+
+    fn save_password_to_keychain(
+        smtp_user: &str,
+        password_to_save: &str,
+    ) -> Result<(), keyring::Error> {
+        if smtp_user.is_empty() {
+            warn!("Cannot save password to keychain: SMTP username is empty.");
+            return Err(keyring::Error::Invalid("smtp_user".to_string(), "Username cannot be empty for keychain storage".to_string()));
+        }
+        let entry = Entry::new(Self::KEYRING_SERVICE_NAME, smtp_user)?;
+        entry.set_password(password_to_save)
+    }
+
+    fn delete_password_from_keychain(smtp_user: &str) -> Result<(), keyring::Error> {
+        if smtp_user.is_empty() {
+            warn!("Cannot delete password from keychain: SMTP username is empty.");
+            return Ok(()); // Or an error
+        }
+        let entry = Entry::new(Self::KEYRING_SERVICE_NAME, smtp_user)?;
+        entry.delete_credential()
     }
 
     fn configure_visuals(cc: &eframe::CreationContext<'_>) {
@@ -668,7 +734,7 @@ impl MyApp {
                 smtp_host: self.smtp_host.clone(),
                 smtp_port_str: self.smtp_port_str.clone(),
                 smtp_user: self.smtp_user.clone(),
-                smtp_password: self.smtp_password.clone(),
+                // smtp_password: self.smtp_password.clone(),
                 from_email: self.from_email.clone(),
                 sender_name: self.sender_name.clone(),
                 email_subject: self.email_subject.clone(),
@@ -795,6 +861,8 @@ impl MyApp {
     fn ui_smtp_settings(&mut self, ui: &mut egui::Ui) {
         ui.heading("SMTP Settings");
         ui.add_space(5.0);
+        let mut smtp_user_changed_this_frame = false;
+
         egui::Grid::new("smtp_grid")
             .num_columns(2)
             .spacing([10.0, 8.0])
@@ -802,24 +870,54 @@ impl MyApp {
                 ui.label("Host:");
                 ui.text_edit_singleline(&mut self.smtp_host);
                 ui.end_row();
+
                 ui.label("Port:");
                 ui.text_edit_singleline(&mut self.smtp_port_str);
                 ui.end_row();
+
                 ui.label("Username:");
-                ui.text_edit_singleline(&mut self.smtp_user);
-                ui.end_row();
-                ui.label("Password:");
-                let mut password_string = self.smtp_password.expose_secret();
-                let response = ui.add(
-                    egui::TextEdit::singleline(&mut password_string)
-                        .password(true)
-                        .hint_text("Enter SMTP password"),
-                );
-                if response.changed() {
-                    // FIX: Use .into() here as well
-                    self.smtp_password = SecretString::new(password_string.into());
+                let user_response = ui.text_edit_singleline(&mut self.smtp_user);
+                if user_response.changed() {
+                    smtp_user_changed_this_frame = true;
                 }
                 ui.end_row();
+
+                ui.label("Password:");
+                // Use a horizontal layout for password field and save button
+                ui.horizontal(|ui| {
+                    let password_response = ui.add(
+                        egui::TextEdit::singleline(&mut self.ui_smtp_password_input)
+                            .password(true)
+                            .hint_text("Enter/update password"),
+                    );
+
+                    if password_response.changed() {
+                        // User is typing a new password, update the runtime SecretString immediately
+                        // for potential use if they send email without explicitly clicking "Save to Keychain".
+                        self.smtp_password = SecretString::new(self.ui_smtp_password_input.clone().into());
+                    }
+                    
+                    // Add a button to explicitly save the password to the OS keychain
+                    // Only enable if username and password input are not empty.
+                    let can_save_to_keychain = !self.smtp_user.is_empty() && !self.ui_smtp_password_input.is_empty();
+                    if ui.add_enabled(can_save_to_keychain, egui::Button::new("Save to Keychain")).on_hover_text("Save the entered password to the OS keychain for the current username.").clicked() {
+                        match Self::save_password_to_keychain(&self.smtp_user, &self.ui_smtp_password_input) {
+                            Ok(_) => {
+                                self.status_message = format!("Password for '{}' saved to OS keychain.", self.smtp_user);
+                                info!("Password for '{}' saved to keychain.", self.smtp_user);
+                                // Update runtime SecretString as well
+                                self.smtp_password = SecretString::new(self.ui_smtp_password_input.clone().into());
+                            }
+                            Err(e) => {
+                                self.status_message = format!("Failed to save password: {:?}", e);
+                                error!("Keychain save error for user '{}': {:?}", self.smtp_user, e);
+                            }
+                        }
+                    }
+                });
+                ui.end_row();
+
+
                 ui.label("From Email:");
                 ui.text_edit_singleline(&mut self.from_email);
                 ui.end_row();
@@ -827,6 +925,34 @@ impl MyApp {
                 ui.text_edit_singleline(&mut self.sender_name);
                 ui.end_row();
             });
+
+        // If SMTP username changed in this frame, clear current password fields and try to load from keychain.
+        if smtp_user_changed_this_frame {
+            info!("SMTP Username changed to: {}", self.smtp_user);
+            self.ui_smtp_password_input.clear(); // Clear UI buffer
+            self.smtp_password = SecretString::new("".into()); // Clear runtime secret
+            if !self.smtp_user.is_empty() {
+                match Self::load_password_from_keychain(&self.smtp_user) {
+                    Ok(loaded_password) => {
+                        self.smtp_password = loaded_password;
+                        // Optionally, indicate in UI that a password was loaded (e.g., by setting ui_smtp_password_input to "********")
+                        // self.ui_smtp_password_input = "********".to_string(); // Or leave blank
+                        self.status_message = format!("Loaded password from keychain for '{}'.", self.smtp_user);
+                        info!("Loaded password from keychain for new user '{}'.", self.smtp_user);
+                    }
+                    Err(keyring::Error::NoEntry) => {
+                        self.status_message = format!("No password in keychain for user '{}'. Enter new password.", self.smtp_user);
+                        info!("No password in keychain for new user '{}'.", self.smtp_user);
+                    }
+                    Err(e) => {
+                        self.status_message = format!("Error loading password for '{}': {:?}", self.smtp_user, e);
+                        error!("Error loading password from keychain for new user '{}': {:?}", self.smtp_user, e);
+                    }
+                }
+            } else {
+                self.status_message = "SMTP username cleared. Password cleared.".to_string();
+            }
+        }
     }
 
     // (ui_email_message remains the same)
@@ -1106,6 +1232,9 @@ impl MyApp {
                 return;
             }
         };
+
+
+
         if self.available_slots.is_empty() {
             if self.calendar_hub.is_some() {
                 warn!("Proceeding to send email, but no available slots were fetched or found.");
@@ -1115,6 +1244,31 @@ impl MyApp {
                 self.status_message = "Warning: Sending email without calendar slots.".to_string();
             }
         }
+
+        if self.smtp_password.expose_secret().is_empty() && !self.smtp_user.is_empty() {
+            info!("Runtime SMTP password is empty for send, attempting keychain load for user '{}'.", self.smtp_user);
+            match Self::load_password_from_keychain(&self.smtp_user) {
+                Ok(password_secret) => {
+                    self.smtp_password = password_secret;
+                    info!("Password loaded from keychain just before sending.");
+                }
+                Err(keyring::Error::NoEntry) => {
+                    warn!("No password in keychain for user '{}' during send.", self.smtp_user);
+                    // Proceeding, user might have entered it only in UI buffer without saving to keychain yet.
+                    // If ui_smtp_password_input is also empty, SmtpConfig check below will fail.
+                }
+                Err(e) => {
+                    warn!("Error loading password from keychain for user '{}' during send: {:?}", self.smtp_user, e);
+                }
+            }
+        }
+        // If smtp_password is still empty (after UI input and keychain attempt), but UI buffer has it, use UI buffer.
+        // This covers the case where user typed but didn't click "Save to Keychain".
+        if self.smtp_password.expose_secret().is_empty() && !self.ui_smtp_password_input.is_empty() {
+             self.smtp_password = SecretString::new(self.ui_smtp_password_input.clone().into());
+             info!("Using password from UI input buffer for sending.");
+        }
+
         let smtp_config = SmtpConfig {
             host: self.smtp_host.clone(),
             port,
@@ -1289,8 +1443,19 @@ impl eframe::App for MyApp {
                         info!("Applying config.toml values as no saved state was loaded.");
                         self.smtp_host = config.smtp.host;
                         self.smtp_port_str = config.smtp.port.to_string();
-                        self.smtp_user = config.smtp.user;
-                        self.smtp_password = config.smtp.password; // This might overwrite user input if they change password before config loads? Consider carefully.
+                        // self.smtp_user = config.smtp.user;
+                        // self.smtp_password = config.smtp.password; // This might overwrite user input if they change password before config loads? Consider carefully.
+                        if self.smtp_user.is_empty() {
+                           self.smtp_user = config.smtp.user;
+                           // If smtp_user was set from config and is now non-empty,
+                           // try to load its password from keychain
+                           if !self.smtp_user.is_empty() {
+                               match Self::load_password_from_keychain(&self.smtp_user) {
+                                   Ok(pass) => self.smtp_password = pass,
+                                   Err(_) => {} // Ignore error, field will be empty
+                               }
+                           }
+                        }
                         self.from_email = config.smtp.from_email;
                         self.sender_name = config.sender.name;
                         self.recipients = config
