@@ -1,2 +1,5 @@
 .env
 coffee_chat/target/
+coffee_chat/credentials.json
+coffee_chat/tokencache.json
+coffee_chat/fonts/
