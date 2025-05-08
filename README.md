@@ -11,6 +11,10 @@ Group 17
 - Seoeun (Blaire) Jung
 
 ## Project Introduction
+
+[We pivoted to automating mass email sends for consultants due to linkedin API issues.]
+Thus, this old outline is a bit outdated however most of info is correct aside from Linkedin stuff. 
+
 The Coffee Chat Email Bot is designed to streamline professional networking by automating the process of sending personalized coffee chat invitations. This tool tailors emails by leveraging data from LinkedIn profiles alongside the user’s calendar availability. By handling the collection, integration, and scheduling automatically, the bot reduces administrative workload while creating engaging and personalized outreach messages.
 
 **Goals and Objectives:**
